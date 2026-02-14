@@ -571,8 +571,9 @@ class RNA_ClassQuery_Model_Treex(nn.Module):
         node_features = self.cnn_block(x, batch)
         # Note: GCN block is removed
 
-        # LSTM processing between CNN and Class-Query Head
-        lstm_out, _ = self.lstm(node_features)
+        node_features_3d = node_features.view(batch_size, seq_len, -1)  # [256, 1001, 128]
+        lstm_out, _ = self.lstm(node_features_3d)  # [256, 1001, 256]
+        lstm_out = lstm_out.reshape(-1, lstm_out.size(-1))  # [256256, 256] 给后续用
 
         if self.use_hierarchical:
             # Hierarchical head returns 2 values: logits_12class, attn_weights_12
