@@ -12,4 +12,4 @@ if __name__ == "__main__":
         gpu=[1],
         amp=True,
     )
-    run_experiment(args, base_log_dir='logs-1001')
+    run_experiment(args, base_log_dir='logs1001')

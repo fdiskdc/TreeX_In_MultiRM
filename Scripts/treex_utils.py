@@ -90,7 +90,7 @@ def cal_loss_weight(dataset, beta=0.99999):
     return class_weight
 
 
-def naive_loss(y_pred, y_true, loss_weight=None, ohem=False, focal=False):
+def naive_loss(y_pred, y_true, loss_weight=None, ohem=False, focal=False, device='cuda'):
     num_task = y_true.shape[-1]
     num_examples = y_true.shape[0]
     k = 0.7
@@ -109,7 +109,7 @@ def naive_loss(y_pred, y_true, loss_weight=None, ohem=False, focal=False):
             loss = -(torch.log(x) * y + torch.log(1 - x) * (1 - y))
         return loss
 
-    loss_output = torch.zeros(num_examples).cuda()
+    loss_output = torch.zeros(num_examples, device=device)
 
     # Handle model returning tuple (logits, attn_weights) from hierarchical head
     if isinstance(y_pred, tuple) and len(y_pred) == 2:
@@ -223,13 +223,13 @@ def adjust_learning_rate(optimizer, lr):
         param_group['lr'] = lr
 
 
-def test(model, test_loader, loss_weight, use_embedding, use_uncertain_weighting, MultiTaskLossWrapper=None):
+def test(model, test_loader, loss_weight, use_embedding, use_uncertain_weighting, device='cuda', MultiTaskLossWrapper=None):
     with torch.no_grad():
         model.eval()
         test_loss = 0
         metrics_dict = {"acc": 0, "auc": 0, "ap": 0}
         for x, y_true in test_loader:
-            x, y_true = x.cuda(), y_true.cuda()
+            x, y_true = x.to(device), y_true.to(device)
             # resize input x from 1001 features
             if not use_embedding:
                 x = x.view(x.size(0), -1, 4).transpose(1, 2)
@@ -338,7 +338,7 @@ def log_average_metrics(metrics_avg, logger):
     logger.info('\n' + str(tb_avg))
 
 
-def train(model, train_loader, test_data, args, logger, save_dir, MultiTaskLossWrapper=None):
+def train(model, train_loader, test_data, args, logger, save_dir, device='cuda', MultiTaskLossWrapper=None):
     """Main training loop."""
     if not os.path.exists(save_dir):
         logger.info(f'{save_dir} does not exist, create it now')
@@ -360,11 +360,11 @@ def train(model, train_loader, test_data, args, logger, save_dir, MultiTaskLossW
     # prepare weights parameters
     loss_weight = []
     for i in range(args.num_task):
-        loss_weight.append(loss_weight_[i].clone().detach().requires_grad_(True).to("cuda"))
+        loss_weight.append(loss_weight_[i].clone().detach().requires_grad_(True).to(device))
 
     # prepare uncertain weighting
     if args.use_uncertain_weighting:
-        MutiTaskLoss = MultiTaskLossWrapper(args.num_task).cuda()
+        MutiTaskLoss = MultiTaskLossWrapper(args.num_task).to(device)
     else:
         MutiTaskLoss = None
 
@@ -386,7 +386,7 @@ def train(model, train_loader, test_data, args, logger, save_dir, MultiTaskLossW
         pbar = tqdm(enumerate(train_loader), total=len(train_loader),
                       desc=f'Epoch {epoch+1}/{args.epochs}')
         for i, (x, y_true) in pbar:
-            x, y_true = x.cuda(), y_true.cuda()
+            x, y_true = x.to(device), y_true.to(device)
 
             if not args.use_embedding:
                 x = x.view(x.size(0), -1, 4).transpose(1, 2)
@@ -449,7 +449,7 @@ def train(model, train_loader, test_data, args, logger, save_dir, MultiTaskLossW
 
         # compute validation loss and acc
         val_loss, metrics_dict = test(model, test_data, loss_weight, args.use_embedding,
-                                      args.use_uncertain_weighting, MutiTaskLoss)
+                                      args.use_uncertain_weighting, device, MutiTaskLoss)
         logwriter.writerow(dict(epoch=epoch, loss=training_loss.cpu().numpy() / len(train_loader.dataset),
                                 val_loss=val_loss.detach().cpu().numpy(), val_acc=metrics_dict['acc'],
                                 val_recall=metrics_dict["auc"],
@@ -474,7 +474,7 @@ def train(model, train_loader, test_data, args, logger, save_dir, MultiTaskLossW
 
         with torch.no_grad():
             for x, y_true in test_data:
-                x, y_true = x.cuda(), y_true.cuda()
+                x, y_true = x.to(device), y_true.to(device)
                 if not args.use_embedding:
                     x = x.view(x.size(0), -1, 4).transpose(1, 2)
                 y_pred = model(x)
@@ -564,7 +564,7 @@ def parse_args(**kwargs):
     parser.add_argument('--save_dir', type=str, default=defaults['save_dir'])
     parser.add_argument('-w', '--weights', type=str, default=defaults['weights'],
                         help="The path of the saved weights. Should be specified when testing")
-    parser.add_argument('--gpu', type=int, default=defaults['gpu'], nargs='+', help="used GPU")
+    parser.add_argument('--gpu', type=int, default=defaults['gpu'], nargs='*', help="used GPU (empty for CPU mode)")
     parser.add_argument('--num_task', type=int, default=defaults['num_task'])
     parser.add_argument('--grad_norm', type=str2bool, default=defaults['grad_norm'], nargs='?',
                          help='activate grad norm')
@@ -598,7 +598,8 @@ def run_experiment(args, base_log_dir='logs'):
     # Setup logging
     logger, log_dir = setup_logging(base_dir=base_log_dir)
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(x) for x in args.gpu)
+    if args.gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(x) for x in args.gpu)
 
     # Import project-specific modules if not already imported at module level
     try:
@@ -643,13 +644,14 @@ def run_experiment(args, base_log_dir='logs'):
                                                   length=args.length,
                                                   use_embedding=args.use_embedding,
                                                   balanced_sampler=args.balanced_sampler)
-        train(model, train_loader, test_data, args, logger, log_dir, MultiTaskLossWrapper)
+        train(model, train_loader, test_data, args, logger, log_dir, device, MultiTaskLossWrapper)
     else:
         logger.info('Loading test data' + '-' * 70)
         test_data = RMdata(data_path=args.inputs, length=args.length,
                            use_embedding=args.use_embedding, mode=args.mode)
         x_test, y_test = test_data[:]
-        torch.cuda.empty_cache()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         if not args.use_embedding:
             x_test = x_test.view(x_test.size(0), -1, 4).transpose(1, 2)
@@ -659,7 +661,7 @@ def run_experiment(args, base_log_dir='logs'):
 
         # handle with CUDA memory issue
         try:
-            y_pred = model(x_test.cuda())
+            y_pred = model(x_test.to(device))
             # Handle model returning tuple (logits, attn_weights) from hierarchical head
             if isinstance(y_pred, tuple) and len(y_pred) == 2:
                 # Extract logits (first element), ignore attention weights
@@ -670,14 +672,14 @@ def run_experiment(args, base_log_dir='logs'):
             num_iter = x_test.shape[0] // batch_size
 
             x_test_tem = x_test[0:1*batch_size, ...]
-            y_pred = model(x_test_tem.cuda())
+            y_pred = model(x_test_tem.to(device))
             # Handle model returning tuple (logits, attn_weights) from hierarchical head
             if isinstance(y_pred, tuple) and len(y_pred) == 2:
                 # Extract logits (first element), ignore attention weights
                 y_pred = y_pred[0]
             for i in range(1, num_iter):
                 x_test_tem = x_test[i*batch_size:(i+1)*batch_size, ...]
-                y_pred_tem = model(x_test_tem.cuda())
+                y_pred_tem = model(x_test_tem.to(device))
                 # Handle model returning tuple (logits, attn_weights) from hierarchical head
                 if isinstance(y_pred_tem, tuple) and len(y_pred_tem) == 2:
                     # Extract logits (first element), ignore attention weights

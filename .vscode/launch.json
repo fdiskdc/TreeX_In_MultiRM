@@ -4,22 +4,23 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
-            "name": "Scripts/train_treex1001.py",
+            "name": "1001-Scripts/train_treex.py",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/Scripts/train_treex1001.py",
             "console": "integratedTerminal"
         },
         {
-            "name": "Scripts/train_treex101.py",
+            "name": "101-Scripts/train_treex.py",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/Scripts/train_treex101.py",
             "console": "integratedTerminal"
         },
         {
-            "name": "Scripts/train_treex-51.py",
+            "name": "51-Scripts/train_treex.py",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/Scripts/train_treex.py",
