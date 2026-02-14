@@ -1,5 +1,52 @@
+# Data and logs
 /data
 /logs
 /logs51
 /logs101
 /logs1001
+/logs-*
+
+# Python cache files
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model checkpoints and outputs
+*.pkl
+*.h5
+*.pth
+*.ckpt
+Results/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and distribution
+build/
+dist/
+*.egg-info/
