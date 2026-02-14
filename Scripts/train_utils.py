@@ -11,6 +11,7 @@ import seaborn as sns
 from matplotlib.colors import ListedColormap
 import matplotlib as mpl
 from matplotlib.font_manager import FontProperties
+from tqdm import tqdm
 
 class HDF5Dataset(Dataset):
     """
@@ -43,9 +44,10 @@ class HDF5Dataset(Dataset):
 
         y = torch.from_numpy(y)
 
-        # convert datatype
-        x = x.type('torch.cuda.FloatTensor')
-        y = y.type('torch.cuda.FloatTensor')
+        # convert datatype - use FloatTensor instead of CUDA to avoid multiprocessing issues
+        # CUDA conversion will be done in training loop
+        x = x.type('torch.FloatTensor')
+        y = y.type('torch.FloatTensor')
         return (x, y)
 
     def __len__(self):
@@ -83,13 +85,10 @@ class RMdata(Dataset):
                 total_length = self.train_x.shape[1]
                 middle_index = total_length // 2
                 self.train_x = self.train_x.iloc[:,middle_index-self.radius+1:middle_index+self.radius-1+1].to_numpy()
-                # print(self.train_x.shape[1])
                 self.valid_x = self.valid_x.iloc[:,middle_index-self.radius+1:middle_index+self.radius-1+1].to_numpy()
             else:
-                # cropping the sequence one_hot encoding
                 total_length = self.train_x.shape[1]
                 middle_index = total_length // 2
-                # print(middle_index)
                 self.train_x = self.train_x.iloc[:,2000-self.radius*4:2004+self.radius*4].to_numpy()
                 self.valid_x = self.valid_x.iloc[:,2000-self.radius*4:2004+self.radius*4].to_numpy()
         else:
@@ -101,22 +100,19 @@ class RMdata(Dataset):
             if self.use_embedding:
                 self.valid_x = pd.read_hdf(self.data_path,'valid_in_3_mers')
                 self.test_x = pd.read_hdf(self.data_path,'test_in_3_mers')
-                # cropping the sequence accroding to its length
                 total_length = self.valid_x.shape[1]
                 middle_index = total_length // 2
-                # print(self.train_x.shape[1])
                 self.valid_x = self.valid_x.iloc[:,middle_index-self.radius+1:middle_index+self.radius-1+1].to_numpy()
                 self.test_x = self.test_x.iloc[:,middle_index-self.radius+1:middle_index+self.radius-1+1].to_numpy()
             else:
-                # cropping the sequence one_hot encoding
                 total_length = self.valid_x.shape[1]
                 middle_index = total_length // 2
-                # print(middle_index)
                 self.valid_x = self.valid_x.iloc[:,2000-self.radius*4:2004+self.radius*4].to_numpy()
-                # print(self.train_x.shape[1])
                 self.test_x = self.test_x.iloc[:,2000-self.radius*4:2004+self.radius*4].to_numpy()
 
         self.class_name = list(pd.read_hdf(self.data_path,'test_out').columns)
+
+
 
 
     def __getitem__(self,index):
@@ -135,8 +131,10 @@ class RMdata(Dataset):
         y = torch.from_numpy(y)
 
 
-        x = x.type('torch.cuda.FloatTensor')
-        y = y.type('torch.cuda.FloatTensor')
+        # Use FloatTensor instead of CUDA to avoid multiprocessing issues
+        # CUDA conversion will be done in training loop
+        x = x.type('torch.FloatTensor')
+        y = y.type('torch.FloatTensor')
 
         return (x, y)
 
@@ -154,27 +152,23 @@ def load_RM_data(path,batch_size,length,use_embedding,balanced_sampler=False):
     train = RMdata(path,use_embedding=use_embedding,
                             length= length,mode='train')
 
-    valid = RMdata(path,use_embedding=use_embedding,
-                    length=length, mode='valid')
+    test = RMdata(path,use_embedding=use_embedding,
+                    length=length, mode='test')
 
     if not balanced_sampler:
-        train_loader = DataLoader(dataset=train,batch_size=batch_size,shuffle=True)
+        train_loader = DataLoader(dataset=train,batch_size=batch_size,shuffle=True,num_workers=8,pin_memory=True)
     else:
         weights_train = make_weights_for_balanced_classes(train)
-        # weights_valid = make_weights_for_balanced_classes(valid)
 
         weights_train = torch.cuda.DoubleTensor(weights_train)
-        # weights_valid = torch.cuda.DoubleTensor(weights_valid)
 
         sampler_train = sampler.WeightedRandomSampler(weights_train, len(weights_train))
-        # sampler_valid = sampler.WeightedRandomSampler(weights_valid, len(weights_valid))
 
-        train_loader = DataLoader(dataset=train,batch_size=batch_size,sampler=sampler_train)
-        # valid_loader = DataLoader(dataset=valid,batch_size=batch_size,sampler=sampler_valid)
+        train_loader = DataLoader(dataset=train,batch_size=batch_size,sampler=sampler_train,num_workers=8,pin_memory=True)
 
-    valid_loader = DataLoader(dataset=valid,batch_size=batch_size,shuffle=True)
+    test_loader = DataLoader(dataset=test,batch_size=batch_size,shuffle=True,pin_memory=True)
 
-    return train_loader, valid_loader
+    return train_loader, test_loader
 
 
 def make_weights_for_balanced_classes(dataset):
@@ -213,7 +207,10 @@ def cal_recall(y_true, y_pred,eps=1e-7):
 	return recall
 
 def cal_accuary(y_true, y_pred):
-    acc = torch.mean((torch.round(torch.clamp(y_pred,0,1))==y_true).type('torch.cuda.FloatTensor'))
+    # Use same device as input tensors instead of forcing CUDA
+    # Also accept device parameter if needed
+    device = y_true.device if hasattr(y_true, 'device') else 'cpu'
+    acc = torch.mean((torch.round(torch.clamp(y_pred,0,1))==y_true).type(y_true.dtype))
     return acc
 
 def precision_multi(y_true,y_pred):
@@ -283,11 +280,21 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
     """
     Inputs:
         class_name: for plot purpose
+        model_out: Can be either:
+            - List of tensors (old format): [tensor_i for each task i]
+            - Single tensor (new format): [batch_size, num_classes]
     """
     from sklearn.metrics import recall_score,precision_score,roc_auc_score,roc_curve, average_precision_score
     from sklearn.metrics import confusion_matrix
     from sklearn.metrics import precision_recall_curve
-    num_task = len(model_out)
+
+    # Handle both list and single tensor formats
+    if isinstance(model_out, torch.Tensor):
+        # New format: single tensor [Batch, Num_Classes]
+        num_task = model_out.shape[1]
+    else:
+        # Old format: list of tensors
+        num_task = len(model_out)
 
     # threshold_list = [0.5 for i in range(num_task)]                              # thresholds standard
     threshold_list = [0.002887,0.004897,0.001442,0.010347,0.036834,0.028677,
@@ -300,11 +307,14 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
     # threshold_list = [0.007389,0.050478,0.046165,0.068021,0.088967,0.150652,    # thresholds for CNN+Lstm
     #                   0.080001,0.317348,0.003866,0.013430,0.090117,0.256765]
     metrics = {'recall':[],'precision':[],'accuracy':[],'auc':[],'auc_2':[],
-                'sn':[],'sp':[],'acc_2':[],'mcc':[], 'ap':[], 'ap_2':[]}
+                'sn':[],'sp':[],'acc_2':[],'mcc':[], 'ap':[], 'ap_2':[],
+                'tp':[], 'tn':[], 'fp':[], 'fn':[], 'f1':[], 'auprc':[], 'best_threshold':[]}
 
     # auc_2: auc across all samples
     # auc: auc across one single class
-    metrics_avg = {'recall':0, 'precision':0,'accuracy':0,'auc':0,'auc_2':0}
+    metrics_avg = {'recall':0, 'precision':0,'accuracy':0,'auc':0,'auc_2':0,
+                   'sn':0, 'sp':0, 'acc_2':0, 'mcc':0, 'ap':0, 'ap_2':0,
+                   'tp':0, 'tn':0, 'fp':0, 'fn':0, 'f1':0, 'auprc':0, 'best_threshold':0}
 
     # Compute ROC curve and ROC area for each class
     fpr,tpr = dict(), dict()
@@ -315,12 +325,24 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
 
     label = label.cpu().numpy()
     Y_pred = np.zeros(label.shape)
+
+    # Determine format and get predictions accordingly
+    is_tensor_format = isinstance(model_out, torch.Tensor)
+
     for i in range(num_task):
         y_true = label[:,i]
-        y_pred = torch.clamp(model_out[i].cpu().detach(),0,1).numpy()
-        y_pred = np.array([0 if instance < threshold_list[i] else 1 for instance in list(y_pred)])
-        Y_pred[:,i] = y_pred
-        y_score = model_out[i].cpu().detach().numpy()
+        if is_tensor_format:
+            # New format: model_out is [batch_size, num_classes]
+            y_pred_clamped = torch.clamp(model_out[:,i].cpu().detach(),0,1).numpy()
+            y_pred = np.array([0 if instance < threshold_list[i] else 1 for instance in list(y_pred_clamped)])
+            Y_pred[:,i] = y_pred
+            y_score = model_out[:,i].cpu().detach().numpy()
+        else:
+            # Old format: model_out is a list of tensors
+            y_pred_clamped = torch.clamp(model_out[i].cpu().detach(),0,1).numpy()
+            y_pred = np.array([0 if instance < threshold_list[i] else 1 for instance in list(y_pred_clamped)])
+            Y_pred[:,i] = y_pred
+            y_score = model_out[i].cpu().detach().numpy()
         # if i==0:
             # print(y_pred[y_true==1])
         # recall = recall_score(y_true,y_pred,zero_division=1)
@@ -346,13 +368,16 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
         precisions[i], recalls[i], _ = precision_recall_curve(y_true[i*100:(i+1)*100], y_score[i*100:(i+1)*100])
         precisions_m[i], recalls_m[i], _ = precision_recall_curve(y_true, y_score)
 
-        gmeans = np.sqrt(tpr_2[i] * (1-fpr_2[i]))
+        # Search for best F1 threshold
+        precisions_f1, recalls_f1, thresholds_f1 = precision_recall_curve(y_true, y_score)
+        f1_scores = 2 * (precisions_f1 * recalls_f1) / (precisions_f1 + recalls_f1)
+        f1_scores = np.nan_to_num(f1_scores)
+        best_f1_idx = np.argmax(f1_scores)
+        best_threshold = thresholds_f1[best_f1_idx]
+        best_f1_score = f1_scores[best_f1_idx]
 
-        # locate the index of the largest g-mean
-        ix = np.argmax(gmeans)
-        print('Best Threshold=%f, G-Mean=%.3f' % (thresholds_2[ix], gmeans[ix]))
+        print('Best Threshold=%.6f, Best F1=%.3f' % (best_threshold, best_f1_score))
 
-        best_threshold = thresholds_2[ix]
         y_pred_new = np.array([0 if instance < best_threshold else 1 for instance in list(y_score)])
 
         # binary based confusion_matrix
@@ -380,6 +405,7 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
         metrics['mcc'].append(mcc)
         metrics['ap'].append(ap)
         metrics['ap_2'].append(ap_2)
+        metrics['best_threshold'].append(best_threshold)
 
 
 
@@ -388,12 +414,32 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
         metrics['precision'].append(precision)
         metrics['accuracy'].append(acc)
         metrics['auc'].append(auc)
-
+        metrics['tp'].append(tp)
+        metrics['tn'].append(tn)
+        metrics['fp'].append(fp)
+        metrics['fn'].append(fn)
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        metrics['f1'].append(f1)
+        metrics['auprc'].append(ap)
 
         metrics_avg['recall'] += recall
         metrics_avg['precision'] += precision
         metrics_avg['accuracy'] += acc
-        # metrics_avg['auc'] += auc
+        metrics_avg['auc'] += auc
+        metrics_avg['auc_2'] += auc_2
+        metrics_avg['sn'] += sensitivity
+        metrics_avg['sp'] += specificity
+        metrics_avg['acc_2'] += acc_2
+        metrics_avg['mcc'] += mcc
+        metrics_avg['ap'] += ap
+        metrics_avg['ap_2'] += ap_2
+        metrics_avg['tp'] += tp
+        metrics_avg['tn'] += tn
+        metrics_avg['fp'] += fp
+        metrics_avg['fn'] += fn
+        metrics_avg['f1'] += f1
+        metrics_avg['auprc'] += ap
+        metrics_avg['best_threshold'] += best_threshold
 
     precision_multi_ = precision_multi(label,Y_pred)
     recall_multi_ = recall_multi(label,Y_pred)
@@ -405,10 +451,8 @@ def cal_metrics(model_out,label,plot=False,class_names=None,plot_name=None):
     print("f1 multi: %f"%(f1_multi_))
     print("hamming loss: %f"%(hamming_loss_))
 
-    metrics_avg['recall'] /= num_task
-    metrics_avg['precision'] /= num_task
-    metrics_avg['accuracy'] /= num_task
-    # metrics_avg['auc'] /= num_task
+    for key in metrics_avg:
+        metrics_avg[key] /= num_task
 
     print(plot)
     if plot:
