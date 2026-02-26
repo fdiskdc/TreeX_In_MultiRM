@@ -5,6 +5,8 @@
 /logs101
 /logs1001
 /logs-*
+/fasta
+/fasta2
 
 # Python cache files
 *.pyc
