@@ -10,6 +10,7 @@
 /test_results
 /Seqs
 /tomtom_output
+/draw_motif/draw_motif
 # Python cache files
 *.pyc
 *.pyo
