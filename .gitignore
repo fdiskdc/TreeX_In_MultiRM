@@ -7,7 +7,9 @@
 /logs-*
 /fasta
 /fasta2
-
+/test_results
+/Seqs
+/tomtom_output
 # Python cache files
 *.pyc
 *.pyo
