@@ -68,6 +68,10 @@ def highest_x(a,w,p=1):
                 bests.append(highest)
 
 
+        if len(bests) == 0:
+            # No more segments meet the minimum length requirement
+            break
+
         best_idx = max(zip(bests, range(len(bests))))[1]   # calculate the index of maximum sum
 
         cut_value = bests[best_idx]
@@ -266,7 +270,12 @@ def helper(RM,nucleos,data_type,length,RM_name, download=False, w=5,k=3,p=1):
     extract short seqs and relative scores
     """
 
-    RM_sum = np.sum(RM,axis=1)
+    # RM shape: (n_samples, seq_length, 1)
+    # Sum over the last dimension to get (n_samples, seq_length)
+    if RM.ndim == 3:
+        RM_sum = np.sum(RM, axis=2)
+    else:
+        RM_sum = RM
 
     num_samples = RM.shape[0]
     results = []                                 # (score,start_idx,end_idx)
@@ -313,6 +322,12 @@ def cal_consensus_motif_2(seqs,scores,eps=0.3):
          scores: aggregated ig score over such a short aligned sequence
          eps: parameters for DBSCAN
     """
+    # Convert seqs to numpy array if it's a list
+    if isinstance(seqs, list):
+        seqs = np.array(seqs)
+    if isinstance(scores, list):
+        scores = np.array(scores)
+
     data = []
     for i in range(len(seqs)):
         tmp = to_onehot(seqs[i]).T.flatten()
@@ -322,17 +337,28 @@ def cal_consensus_motif_2(seqs,scores,eps=0.3):
 
     class_labels = reduction_clustering(df,n_clusters=6,eps=eps)
 
-    seqs_dict = {}
-    scores_dict = {}
-    for i in np.unique(class_labels):
-        if i != -1:
-            class_seqs = seqs[class_labels==i]
-            class_scores = scores[class_labels==i]
-            avg_scores = np.sum(class_scores) / len(class_seqs)
+    # Check if clustering produced any valid clusters
+    unique_labels = np.unique(class_labels)
+    valid_labels = unique_labels[unique_labels != -1]
+
+    if len(valid_labels) == 0:
+        print(f"Warning: No valid clusters found with eps={eps}. All sequences classified as noise.")
+        print(f"Using all sequences as a single cluster as fallback.")
+
+        # Fallback: use all sequences as a single cluster
+        seqs_dict = {0: list(seqs)}
+        scores_dict = {0: np.sum(np.abs(scores)) / len(seqs)}
+    else:
+        seqs_dict = {}
+        scores_dict = {}
+        for i in valid_labels:
+            mask = class_labels == i
+            class_seqs = seqs[mask]
+            class_scores = scores[mask]
+            avg_scores = np.sum(np.abs(class_scores)) / len(class_seqs)
             seqs_dict[i] = list(class_seqs)
             scores_dict[i] = avg_scores
             print('class:%d score:%.5f'%(i,avg_scores))
-            # print(class_seqs)
 
     # sort the class by ig score
     index = sorted(scores_dict,key=scores_dict.__getitem__,reverse=True)
